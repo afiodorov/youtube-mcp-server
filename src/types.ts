@@ -53,6 +53,16 @@ export interface TranscriptParams {
 }
 
 /**
+ * Summary parameters
+ */
+export interface SummarizeParams {
+  videoId: string;
+  language?: string;
+  startSeconds?: number;
+  endSeconds?: number;
+}
+
+/**
  * Ask-a-video parameters
  */
 export interface AskVideoParams {

@@ -51,6 +51,13 @@ The server currently exposes 10 MCP tools.
 
 With `GEMINI_API_KEY` set, Gemini transcribes the video from its URL instead of the server fetching YouTube's captions. YouTube blocks caption requests from most cloud IPs, so this is what makes transcripts work on a hosted server (e.g. `src/lambda.ts`, an AWS Lambda handler). The video is split into 5-minute clips (its length comes from the YouTube Data API) transcribed in parallel, so an hour takes about 25 seconds; a call covers at most an hour, and the result says where to continue. The transcript is lightly cleaned (no filler words), because Gemini refuses verbatim transcripts of well-known videos (`RECITATION`); a clip it keeps refusing is retried on `GEMINI_FALLBACK_MODEL`.
 
+#### `videos_summarize` (needs `GEMINI_API_KEY`)
+- `videoId` (`string`): The YouTube video ID or URL.
+- `language` (`string`, optional): Language to write the summary in; the video's language when omitted.
+- `startSeconds` / `endSeconds` (`number`, optional): Only summarize this clip.
+
+Gemini summarizes from the video itself, with no transcript first: an overview, then the main points with timestamps. Videos over 20 minutes are summarized in 10-minute clips in parallel and the notes merged (Gemini skims long inputs); a call covers at most 2 hours, and the result says where to continue.
+
 #### `videos_askVideo` (needs `GEMINI_API_KEY`)
 - `videoId` (`string`): The YouTube video ID or URL.
 - `question` (`string`): What to find out; Gemini watches the video (speech and visuals) and answers.

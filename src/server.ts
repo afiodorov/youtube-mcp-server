@@ -16,6 +16,7 @@ import {
     SearchParams,
     TranscriptParams,
     AskVideoParams,
+    SummarizeParams,
     ChannelParams,
     ChannelsParams,
     ChannelSearchParams,
@@ -185,6 +186,32 @@ export function createMcpServer() {
                             language: {
                                 type: 'string',
                                 description: 'Language code to translate the transcript into; omit for the original language',
+                            },
+                            startSeconds: {
+                                type: 'number',
+                                description: 'Only from this many seconds into the video',
+                            },
+                            endSeconds: {
+                                type: 'number',
+                                description: 'Only up to this many seconds into the video',
+                            },
+                        },
+                        required: ['videoId'],
+                    },
+                },
+                {
+                    name: 'videos_summarize',
+                    description: 'Summarize a YouTube video: an overview, then the main points with timestamps. Gemini watches the video directly; much shorter than a transcript. Covers at most 2 hours per call; a longer video\'s result says which startSeconds to continue from.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            videoId: {
+                                type: 'string',
+                                description: 'The YouTube video ID or URL',
+                            },
+                            language: {
+                                type: 'string',
+                                description: 'Language code to write the summary in; omit for the video\'s language',
                             },
                             startSeconds: {
                                 type: 'number',
@@ -446,6 +473,9 @@ export function createMcpServer() {
                     break;
                 case 'transcripts_getTranscript':
                     result = await transcriptService.getTranscript(args as unknown as TranscriptParams);
+                    break;
+                case 'videos_summarize':
+                    result = await transcriptService.summarize(args as unknown as SummarizeParams);
                     break;
                 case 'videos_askVideo':
                     result = await transcriptService.askVideo(args as unknown as AskVideoParams);

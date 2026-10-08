@@ -1,5 +1,5 @@
 import { YoutubeTranscript } from "youtube-transcript";
-import { TranscriptParams, SearchTranscriptParams, AskVideoParams } from '../types.js';
+import { TranscriptParams, SearchTranscriptParams, AskVideoParams, SummarizeParams } from '../types.js';
 import { askGemini, hasGeminiApiKey, videoIdOf, FALLBACK_MODEL } from './gemini.js';
 import { hasConfiguredYouTubeApiKey, withYouTubeClient } from './youtube-client.js';
 
@@ -9,6 +9,15 @@ const TRANSCRIBE_PROMPT = `Write a clean transcript of the speech in this video,
 Start a new paragraph at each change of speaker or topic, prefixed with its [mm:ss] (or [h:mm:ss]) timestamp, counted from the start of the whole video.
 Label speakers by name when the video makes them clear, otherwise as Speaker 1, Speaker 2, ...
 Mark significant non-speech audio briefly in brackets, e.g. [music]. Output only the transcript.`;
+
+const SUMMARY_FORMAT = `First a 2-3 sentence overview, then the main points as a list, each with the [mm:ss] (or [h:mm:ss]) timestamp, counted from the start of the whole video, where it is discussed.`;
+
+// Summaries: up to this long, one call on the whole span. Gemini skims longer
+// videos (a one-hour summary covered only its first 15 minutes), so they are
+// summarized in clips in parallel, and the clips' notes merged.
+const SUMMARY_SINGLE_SECONDS = 1200;
+const SUMMARY_CLIP_SECONDS = 600;
+const SUMMARY_MAX_SPAN_SECONDS = 2 * 3600;  // ~30s per call
 
 // Clips are transcribed in parallel, so a call takes about as long as one clip
 // (~10s), well inside CloudFront's 30s origin timeout.
@@ -22,6 +31,10 @@ const clock = (t: number) => {
   return `${h ? `${h}:` : ''}${String(m).padStart(h ? 2 : 1, '0')}:${String(s).padStart(2, '0')}`;
 };
 
+/** Gemini sometimes writes [112:13] for [1:52:13]. */
+const fixTimestamps = (text: string) =>
+  text.replace(/\[(\d{3,}):(\d{2})\]/g, (_, m, sec) => `[${clock(Number(m) * 60 + Number(sec))}]`);
+
 /** The video's length in seconds from the YouTube Data API, or null if unknown. */
 async function durationSeconds(videoId: string): Promise<number | null> {
   if (!hasConfiguredYouTubeApiKey()) return null;
@@ -34,23 +47,49 @@ async function durationSeconds(videoId: string): Promise<number | null> {
 }
 
 /**
- * One clip's transcript, retrying Gemini's refusals (RECITATION) and failures, the
+ * Gemini's answer for one clip, retrying its refusals (RECITATION) and failures, the
  * last time on the fallback model.
  */
-async function transcribeClip(videoId: string, prompt: string, start?: number, end?: number) {
+async function clipWithRetries(videoId: string, prompt: string, start?: number, end?: number, thinkingLevel = 'minimal') {
   let last = '';
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     try {
-      const model = attempt === ATTEMPTS - 1 ? { model: FALLBACK_MODEL } : {};
-      const r = await askGemini(videoId, prompt, { startSeconds: start, endSeconds: end }, model);
-      if (r.finishReason === 'STOP' && r.text.trim()) return { text: r.text.trim(), model: r.model };
+      const model = attempt === ATTEMPTS - 1 ? FALLBACK_MODEL : undefined;
+      const r = await askGemini(videoId, prompt, { startSeconds: start, endSeconds: end }, { thinkingLevel, model });
+      if (r.finishReason === 'STOP' && r.text.trim()) return { text: fixTimestamps(r.text.trim()), model: r.model };
       last = r.finishReason || 'empty response';
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
     }
   }
   const span = start != null ? `${clock(start)}–${end != null ? clock(end) : 'end'}` : 'video';
-  return { text: `[${span}: not transcribed, Gemini: ${last}]`, failed: `${span}: ${last}` };
+  return { text: `[${span}: no output, Gemini: ${last}]`, failed: `${span}: ${last}` };
+}
+
+type ClipResult = Awaited<ReturnType<typeof clipWithRetries>>;
+
+const modelsOf = (parts: ClipResult[]) => [...new Set(parts.flatMap((p) => ('model' in p ? [p.model] : [])))];
+const failuresOf = (parts: ClipResult[]) => parts.flatMap((p) => ('failed' in p ? [p.failed] : []));
+
+/** The span [from, to) of a video a call covers, at most `max` seconds, and its length. */
+async function span(id: string, startSeconds: number | undefined, endSeconds: number | undefined, max: number) {
+  const duration = await durationSeconds(id).catch(() => null);
+  const from = startSeconds ?? 0;
+  const to = Math.min(endSeconds ?? duration ?? Infinity, from + max);
+  if (to <= from) throw new Error(`startSeconds is past the end of the video (${duration}s)`);
+  return {
+    from, to, duration,
+    ...(Number.isFinite(to) && { span: `${clock(from)}–${clock(to)}${duration ? ` of ${clock(duration)}` : ''}` }),
+    ...(duration != null && to < duration && endSeconds == null && { next: `continues: call again with startSeconds=${to}` }),
+  };
+}
+
+/** [start, end) pieces of at most `size` seconds; one unbounded piece if the end is unknown. */
+function clips(from: number, to: number, size: number, startSeconds?: number, endSeconds?: number) {
+  const out: [number | undefined, number | undefined][] = [];
+  if (!Number.isFinite(to)) out.push([startSeconds, endSeconds]);
+  else for (let t = from; t < to; t += size) out.push([t, Math.min(t + size, to)]);
+  return out;
 }
 
 /**
@@ -84,26 +123,16 @@ export class TranscriptService {
         const prompt = language
           ? `${TRANSCRIBE_PROMPT}\nIf the speech is not in the language with code "${language}", translate it into that language.`
           : TRANSCRIBE_PROMPT;
-        const duration = await durationSeconds(id).catch(() => null);
-        const from = startSeconds ?? 0;
-        const to = Math.min(endSeconds ?? duration ?? Infinity, from + MAX_SPAN_SECONDS);
-        if (to <= from) throw new Error(`startSeconds is past the end of the video (${duration}s)`);
-
-        // Unknown length (no YouTube key, or a live stream): one call for the whole span.
-        const clips: [number | undefined, number | undefined][] = [];
-        if (!Number.isFinite(to)) clips.push([startSeconds, endSeconds]);
-        else for (let t = from; t < to; t += CLIP_SECONDS) clips.push([t, Math.min(t + CLIP_SECONDS, to)]);
-
-        const parts = await Promise.all(clips.map(([a, b]) => transcribeClip(id, prompt, a, b)));
-        const failed = parts.flatMap((p) => ('failed' in p ? [p.failed] : []));
-        const models = [...new Set(parts.flatMap((p) => ('model' in p ? [p.model] : [])))];
-        const more = duration != null && to < duration && endSeconds == null;
+        const { from, to, span: covered, next } = await span(id, startSeconds, endSeconds, MAX_SPAN_SECONDS);
+        const parts = await Promise.all(
+          clips(from, to, CLIP_SECONDS, startSeconds, endSeconds).map(([a, b]) => clipWithRetries(id, prompt, a, b)));
+        const models = modelsOf(parts), failed = failuresOf(parts);
         return {
           videoId: id,
           source: `gemini${models.length ? ` (${models.join(', ')})` : ''}, cleaned of filler words; timestamps approximate`,
-          ...(Number.isFinite(to) && { span: `${clock(from)}–${clock(to)}${duration ? ` of ${clock(duration)}` : ''}` }),
+          ...(covered && { span: covered }),
           ...(failed.length && { failedClips: failed }),
-          ...(more && { next: `transcript continues: call again with startSeconds=${to}` }),
+          ...(next && { next: `transcript ${next}` }),
           transcript: parts.map((p) => p.text).join('\n\n'),
         };
       }
@@ -132,6 +161,43 @@ export class TranscriptService {
       throw new Error(`Gemini gave no answer (${result.finishReason || 'empty response'})`);
     }
     return { videoId: videoIdOf(videoId), source: `gemini (${result.model})`, answer: result.text };
+  }
+
+  /**
+   * Summarize a video with Gemini, straight from the video (no transcript first).
+   */
+  async summarize({ videoId, language, startSeconds, endSeconds }: SummarizeParams): Promise<any> {
+    if (!hasGeminiApiKey()) throw new Error('videos_summarize needs GEMINI_API_KEY');
+    const id = videoIdOf(videoId);
+    const lang = language
+      ? `Write in the language with code "${language}".`
+      : 'Write in the language the video is spoken in.';
+    const { from, to, span: covered, next } = await span(id, startSeconds, endSeconds, SUMMARY_MAX_SPAN_SECONDS);
+
+    let summary: string, parts: ClipResult[];
+    if (to - from <= SUMMARY_SINGLE_SECONDS || !Number.isFinite(to)) {
+      parts = [await clipWithRetries(id, `Summarize this video. ${SUMMARY_FORMAT} ${lang}`, startSeconds, endSeconds, 'low')];
+      summary = parts[0].text;
+    } else {
+      parts = await Promise.all(clips(from, to, SUMMARY_CLIP_SECONDS).map(([a, b]) => clipWithRetries(id,
+        `This clip runs from ${clock(a!)} to ${clock(b!)} of the video. List its main points, each with its [mm:ss] (or [h:mm:ss]) timestamp, which must lie between ${clock(a!)} and ${clock(b!)}. Name who says what when it is clear. ${lang} Output only the list.`,
+        a, b)));
+      const notes = parts.map((p) => p.text).join('\n\n');
+      const merged = await askGemini(null,
+        `Below are notes on consecutive parts of one video, ${covered}, with timestamps. Summarize the video from them. ${SUMMARY_FORMAT} Keep the timestamps from the notes. Group related points, and keep the list to the 10-25 most important. ${lang} Output only the summary.\n\n${notes}`,
+        {}, { thinkingLevel: 'low' });
+      // If the merge fails, the clip notes are still a usable (longer) summary.
+      summary = merged.finishReason === 'STOP' && merged.text.trim() ? fixTimestamps(merged.text.trim()) : notes;
+    }
+    const models = modelsOf(parts), failed = failuresOf(parts);
+    return {
+      videoId: id,
+      source: `gemini${models.length ? ` (${models.join(', ')})` : ''}, from the video itself`,
+      ...(covered && { span: covered }),
+      ...(failed.length && { failedClips: failed }),
+      ...(next && { next: `video ${next}` }),
+      summary,
+    };
   }
 
   /**

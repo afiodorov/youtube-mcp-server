@@ -38,12 +38,13 @@ export function videoIdOf(videoIdOrUrl: string): string {
 }
 
 /**
- * Ask Gemini `prompt` about the video, optionally only a clip of it. A response
+ * Ask Gemini `prompt` about the video, optionally only a clip of it, or about no
+ * video at all if `videoIdOrUrl` is null. A response
  * Gemini cut short (finishReason other than STOP, e.g. RECITATION) is returned, not
  * thrown, so callers can retry.
  */
 export async function askGemini(
-  videoIdOrUrl: string,
+  videoIdOrUrl: string | null,
   prompt: string,
   clip: Clip = {},
   { thinkingLevel = 'minimal', model = process.env.GEMINI_MODEL || DEFAULT_MODEL } = {},
@@ -63,10 +64,10 @@ export async function askGemini(
       contents: [{
         role: 'user',
         parts: [
-          {
+          ...(videoIdOrUrl ? [{
             fileData: { fileUri: `https://www.youtube.com/watch?v=${videoIdOf(videoIdOrUrl)}` },
             ...(Object.keys(videoMetadata).length && { videoMetadata }),
-          },
+          }] : []),
           { text: prompt },
         ],
       }],
@@ -74,7 +75,7 @@ export async function askGemini(
         // Not 0: at 0, transcripts of well-known videos are refused as RECITATION more often.
         temperature: 1,
         // Low resolution is ~3x cheaper per second of video; the audio is unaffected.
-        mediaResolution: 'MEDIA_RESOLUTION_LOW',
+        ...(videoIdOrUrl && { mediaResolution: 'MEDIA_RESOLUTION_LOW' }),
         thinkingConfig: { thinkingLevel },
       },
     }),
