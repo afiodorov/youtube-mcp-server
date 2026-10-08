@@ -45,8 +45,16 @@ The server currently exposes 10 MCP tools.
 - `sortBy` (`string`, optional): Supports `relevance`, `subscribers_asc`, `subscribers_desc`, `indie_priority`, and `recent_activity`.
 
 #### `transcripts_getTranscript`
-- `videoId` (`string`): The YouTube video ID.
-- `language` (`string`, optional): Transcript language code. Falls back to `YOUTUBE_TRANSCRIPT_LANG` or `en`.
+- `videoId` (`string`): The YouTube video ID or URL.
+- `language` (`string`, optional): Transcript language code. Falls back to `YOUTUBE_TRANSCRIPT_LANG` or `en`. With `GEMINI_API_KEY` set, it is the language to translate into, and the original language is kept when it is omitted.
+- `startSeconds` / `endSeconds` (`number`, optional, Gemini only): Transcribe only this clip, e.g. to fetch a long video in parts.
+
+With `GEMINI_API_KEY` set, Gemini transcribes the video from its URL instead of the server fetching YouTube's captions. YouTube blocks caption requests from most cloud IPs, so this is what makes transcripts work on a hosted server (e.g. `src/lambda.ts`, an AWS Lambda handler). The video is split into 5-minute clips (its length comes from the YouTube Data API) transcribed in parallel, so an hour takes about 25 seconds; a call covers at most an hour, and the result says where to continue. The transcript is lightly cleaned (no filler words), because Gemini refuses verbatim transcripts of well-known videos (`RECITATION`); a clip it keeps refusing is retried on `GEMINI_FALLBACK_MODEL`.
+
+#### `videos_askVideo` (needs `GEMINI_API_KEY`)
+- `videoId` (`string`): The YouTube video ID or URL.
+- `question` (`string`): What to find out; Gemini watches the video (speech and visuals) and answers.
+- `startSeconds` / `endSeconds` (`number`, optional): Only consider this clip.
 
 #### `channels_getChannel`
 - `channelId` (`string`): The YouTube channel ID.
@@ -150,6 +158,9 @@ Set the following environment variables:
 * `YOUTUBE_API_KEY2`: Secondary fallback API key
 * `YOUTUBE_API_KEY3`: Third fallback API key
 * `YOUTUBE_TRANSCRIPT_LANG`: Default language for transcripts (optional, defaults to 'en')
+* `GEMINI_API_KEY`: Gemini API key (optional): transcripts by Gemini, and `videos_askVideo`
+* `GEMINI_MODEL`: Gemini model (optional, defaults to `gemini-3.5-flash`)
+* `GEMINI_FALLBACK_MODEL`: Gemini model for clips the first refuses (optional, defaults to `gemini-3.5-flash-lite`)
 
 At least one of `YOUTUBE_API_KEY`, `YOUTUBE_API_KEY2`, or `YOUTUBE_API_KEY3` must be set. When a request fails because a key has exhausted its quota, the server retries the same request with the next configured key.
 

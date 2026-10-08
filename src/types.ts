@@ -48,6 +48,18 @@ export interface RelatedVideosParams {
 export interface TranscriptParams {
   videoId: string;
   language?: string;
+  startSeconds?: number;
+  endSeconds?: number;
+}
+
+/**
+ * Ask-a-video parameters
+ */
+export interface AskVideoParams {
+  videoId: string;
+  question: string;
+  startSeconds?: number;
+  endSeconds?: number;
 }
 
 /**

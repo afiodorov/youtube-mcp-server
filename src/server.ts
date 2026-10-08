@@ -15,6 +15,7 @@ import {
     VideoParams,
     SearchParams,
     TranscriptParams,
+    AskVideoParams,
     ChannelParams,
     ChannelsParams,
     ChannelSearchParams,
@@ -66,7 +67,7 @@ function summarizeResult(result: unknown) {
     return `${typeof result}(${String(result)})`;
 }
 
-function createMcpServer() {
+export function createMcpServer() {
     const server = new Server(
         {
             name: 'zubeid-youtube-mcp-server',
@@ -173,20 +174,54 @@ function createMcpServer() {
                 },
                 {
                     name: 'transcripts_getTranscript',
-                    description: 'Get the transcript of a YouTube video',
+                    description: 'Get the transcript of a YouTube video, with timestamps. Returns at most an hour per call; a longer video\'s result says which startSeconds to continue from.',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             videoId: {
                                 type: 'string',
-                                description: 'The YouTube video ID',
+                                description: 'The YouTube video ID or URL',
                             },
                             language: {
                                 type: 'string',
-                                description: 'Language code for the transcript',
+                                description: 'Language code to translate the transcript into; omit for the original language',
+                            },
+                            startSeconds: {
+                                type: 'number',
+                                description: 'Only from this many seconds into the video',
+                            },
+                            endSeconds: {
+                                type: 'number',
+                                description: 'Only up to this many seconds into the video',
                             },
                         },
                         required: ['videoId'],
+                    },
+                },
+                {
+                    name: 'videos_askVideo',
+                    description: 'Ask a question about a YouTube video: Gemini watches it (speech and visuals) and answers. Cheaper than a full transcript for a specific question, and covers what is shown on screen.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            videoId: {
+                                type: 'string',
+                                description: 'The YouTube video ID or URL',
+                            },
+                            question: {
+                                type: 'string',
+                                description: 'What to find out from the video',
+                            },
+                            startSeconds: {
+                                type: 'number',
+                                description: 'Only from this many seconds into the video',
+                            },
+                            endSeconds: {
+                                type: 'number',
+                                description: 'Only up to this many seconds into the video',
+                            },
+                        },
+                        required: ['videoId', 'question'],
                     },
                 },
                 {
@@ -411,6 +446,9 @@ function createMcpServer() {
                     break;
                 case 'transcripts_getTranscript':
                     result = await transcriptService.getTranscript(args as unknown as TranscriptParams);
+                    break;
+                case 'videos_askVideo':
+                    result = await transcriptService.askVideo(args as unknown as AskVideoParams);
                     break;
                 case 'channels_getChannel':
                     result = await channelService.getChannel(args as unknown as ChannelParams);
