@@ -6,9 +6,14 @@ import { hasConfiguredYouTubeApiKey, withYouTubeClient } from './youtube-client.
 // "Clean" rather than verbatim, and temperature 1 in askGemini: Gemini refuses
 // verbatim transcripts of well-known videos as RECITATION far more often.
 const TRANSCRIBE_PROMPT = `Write a clean transcript of the speech in this video, in the language it is spoken in: keep the speaker's words, but drop filler words and false starts.
-Start a new paragraph at each change of speaker or topic, prefixed with its [mm:ss] (or [h:mm:ss]) timestamp, counted from the start of the whole video.
+Start a new paragraph at each change of speaker or topic, and at least every minute, prefixed with its [mm:ss] (or [h:mm:ss]) timestamp, counted from the start of the whole video.
 Label speakers by name when the video makes them clear, otherwise as Speaker 1, Speaker 2, ...
 Mark significant non-speech audio briefly in brackets, e.g. [music]. Output only the transcript.`;
+
+// Frames sampled per second of video, for speech: a third of the tokens of Gemini's
+// default 1 fps, and the same words and timestamps. Seeing fewer frames, Gemini starts
+// fewer paragraphs, hence "at least every minute" above.
+const SPEECH_FPS = 0.1;
 
 const SUMMARY_FORMAT = `First a 2-3 sentence overview, then the main points as a list, each with the [mm:ss] (or [h:mm:ss]) timestamp, counted from the start of the whole video, where it is discussed.`;
 
@@ -55,7 +60,7 @@ async function clipWithRetries(videoId: string, prompt: string, start?: number, 
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     try {
       const model = attempt === ATTEMPTS - 1 ? FALLBACK_MODEL : undefined;
-      const r = await askGemini(videoId, prompt, { startSeconds: start, endSeconds: end }, { thinkingLevel, model });
+      const r = await askGemini(videoId, prompt, { startSeconds: start, endSeconds: end }, { thinkingLevel, model, fps: SPEECH_FPS });
       if (r.finishReason === 'STOP' && r.text.trim()) return { text: fixTimestamps(r.text.trim()), model: r.model };
       last = r.finishReason || 'empty response';
     } catch (error) {
@@ -153,10 +158,10 @@ export class TranscriptService {
   /**
    * Ask Gemini a question about a video (speech and visuals).
    */
-  async askVideo({ videoId, question, startSeconds, endSeconds }: AskVideoParams): Promise<any> {
+  async askVideo({ videoId, question, startSeconds, endSeconds, fps = SPEECH_FPS }: AskVideoParams): Promise<any> {
     if (!hasGeminiApiKey()) throw new Error('videos_askVideo needs GEMINI_API_KEY');
     // Some thinking: answers need more reasoning than transcription.
-    const result = await askGemini(videoId, question, { startSeconds, endSeconds }, { thinkingLevel: 'low' });
+    const result = await askGemini(videoId, question, { startSeconds, endSeconds }, { thinkingLevel: 'low', fps });
     if (result.finishReason !== 'STOP' || !result.text) {
       throw new Error(`Gemini gave no answer (${result.finishReason || 'empty response'})`);
     }

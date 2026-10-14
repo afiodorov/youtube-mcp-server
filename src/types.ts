@@ -70,6 +70,7 @@ export interface AskVideoParams {
   question: string;
   startSeconds?: number;
   endSeconds?: number;
+  fps?: number;
 }
 
 /**

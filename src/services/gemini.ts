@@ -47,14 +47,16 @@ export async function askGemini(
   videoIdOrUrl: string | null,
   prompt: string,
   clip: Clip = {},
-  { thinkingLevel = 'minimal', model = process.env.GEMINI_MODEL || DEFAULT_MODEL } = {},
+  { thinkingLevel = 'minimal', model = process.env.GEMINI_MODEL || DEFAULT_MODEL, fps }: { thinkingLevel?: string; model?: string; fps?: number } = {},
 ): Promise<GeminiResult> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY is not set');
 
-  const videoMetadata: Record<string, string> = {};
+  const videoMetadata: Record<string, string | number> = {};
   if (clip.startSeconds != null) videoMetadata.startOffset = `${clip.startSeconds}s`;
   if (clip.endSeconds != null) videoMetadata.endOffset = `${clip.endSeconds}s`;
+  // Frames sampled per second (Gemini's default is 1); each costs tokens, the audio does not change.
+  if (fps != null) videoMetadata.fps = fps;
 
   const res = await fetch(`${API}/${model}:generateContent`, {
     method: 'POST',
@@ -88,6 +90,6 @@ export async function askGemini(
   const candidate = data.candidates?.[0];
   const text = (candidate?.content?.parts ?? []).map((p: any) => p.text ?? '').join('');
   const finishReason = candidate?.finishReason || data.promptFeedback?.blockReason;
-  console.error(`[gemini] model=${model} clip=${JSON.stringify(clip)} finish=${finishReason} usage=${JSON.stringify(data.usageMetadata)}`);
+  console.error(`[gemini] model=${model} clip=${JSON.stringify(clip)} fps=${fps ?? 1} finish=${finishReason} usage=${JSON.stringify(data.usageMetadata)}`);
   return { text, model, finishReason };
 }

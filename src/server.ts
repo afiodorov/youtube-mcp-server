@@ -247,6 +247,10 @@ export function createMcpServer() {
                                 type: 'number',
                                 description: 'Only up to this many seconds into the video',
                             },
+                            fps: {
+                                type: 'number',
+                                description: 'Video frames to look at per second: default 0.1, enough for what is said; 1 for questions about what is shown on screen (about 3x the cost)',
+                            },
                         },
                         required: ['videoId', 'question'],
                     },
